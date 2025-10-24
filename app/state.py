@@ -28,6 +28,23 @@ class FileData(TypedDict):
     df_json: str
 
 
+class ConditionalRule(TypedDict):
+    id: int
+    condition_column: str
+    condition_op: str
+    condition_value: str
+    action: str
+    target_column: str
+    action_value: str
+    logic_combiner: str
+
+
+class SortConfig(TypedDict):
+    id: int
+    column: str
+    ascending: bool
+
+
 class State(rx.State):
     """The main application state."""
 
@@ -80,6 +97,39 @@ class State(rx.State):
     extract_start_pos: int = 0
     extract_end_pos: int | None = None
     extract_new_col_name: str = "extracted_column"
+    sample_type: str = "random"
+    sample_n: int = 10
+    sample_percentage: float = 50.0
+    sort_configs: list[SortConfig] = []
+    next_sort_id: int = 0
+    conditional_rules: list[ConditionalRule] = []
+    next_conditional_id: int = 0
+    pivot_index: str = ""
+    pivot_columns: str = ""
+    pivot_values: str = ""
+    pivot_aggfunc: str = "mean"
+    melt_id_vars: list[str] = []
+    melt_value_vars: list[str] = []
+    melt_var_name: str = "variable"
+    melt_value_name: str = "value"
+    groupby_columns: list[str] = []
+    groupby_agg_columns: list[str] = []
+    groupby_aggfunc: str = "sum"
+    datetime_columns: list[str] = []
+    extract_components: list[str] = ["year", "month", "day"]
+    date_diff_col1: str = ""
+    date_diff_col2: str = ""
+    date_diff_new_col: str = "date_diff_days"
+    date_arith_column: str = ""
+    date_arith_op: str = "add"
+    date_arith_unit: str = "days"
+    date_arith_value: int = 1
+    label_encode_columns: list[str] = []
+    label_mappings: dict[str, dict[str, int]] = {}
+    onehot_columns: list[str] = []
+    onehot_prefix: str = ""
+    remove_special_columns: list[str] = []
+    special_char_pattern: str = "[^a-zA-Z0-9\\s]"
 
     @rx.var
     def total_preview_rows(self) -> int:
@@ -1064,3 +1114,501 @@ class State(rx.State):
         self.column_order = self.all_columns
         self.selected_columns = self.all_columns
         return rx.toast.success("Substring extracted successfully.")
+
+    @rx.event
+    def add_sort_config(self):
+        """Add a new sort configuration row."""
+        new_config: SortConfig = {
+            "id": self.next_sort_id,
+            "column": "",
+            "ascending": True,
+        }
+        self.sort_configs.append(new_config)
+        self.next_sort_id += 1
+
+    @rx.event
+    def remove_sort_config(self, config_id: int):
+        """Remove a sort configuration by its ID."""
+        self.sort_configs = [
+            config for config in self.sort_configs if config["id"] != config_id
+        ]
+
+    @rx.event
+    def update_sort_config(self, config_id: int, field: str, value: Any):
+        """Update a field in a sort configuration."""
+        for i, config in enumerate(self.sort_configs):
+            if config["id"] == config_id:
+                updated_config = self.sort_configs[i].copy()
+                updated_config[field] = value
+                self.sort_configs[i] = updated_config
+                break
+
+    @rx.event
+    def apply_sorting(self):
+        """Apply the defined sorting configurations to all dataframes."""
+        if not self.sort_configs:
+            return rx.toast.warning("No sort rules defined.")
+        sort_columns = [
+            config["column"] for config in self.sort_configs if config["column"]
+        ]
+        sort_ascending = [
+            config["ascending"] for config in self.sort_configs if config["column"]
+        ]
+        if not sort_columns:
+            return rx.toast.warning("Please select columns for sorting.")
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            df.sort_values(by=sort_columns, ascending=sort_ascending, inplace=True)
+            self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+        return rx.toast.success("Data sorted successfully.")
+
+    @rx.event
+    def apply_sampling(self):
+        """Apply the selected sampling method to the data."""
+        all_dfs = [
+            pd.read_json(io.StringIO(f["df_json"]), orient="split")
+            for f in self.uploaded_files
+        ]
+        if not all_dfs:
+            return rx.toast.warning("No data to sample.")
+        combined_df = pd.concat(all_dfs, ignore_index=True)
+        if self.sample_type == "random":
+            sampled_df = combined_df.sample(n=self.sample_n)
+        elif self.sample_type == "percentage":
+            sampled_df = combined_df.sample(frac=self.sample_percentage / 100)
+        elif self.sample_type == "top":
+            sampled_df = combined_df.head(self.sample_n)
+        elif self.sample_type == "bottom":
+            sampled_df = combined_df.tail(self.sample_n)
+        else:
+            return rx.toast.error("Invalid sample type.")
+        self.uploaded_files = [
+            {
+                "file_name": f"sampled_data_{self.sample_type}.csv",
+                "row_count": len(sampled_df),
+                "columns": sampled_df.columns.tolist(),
+                "df_json": sampled_df.to_json(orient="split"),
+            }
+        ]
+        self.column_order = self.all_columns
+        self.selected_columns = self.all_columns
+        return rx.toast.success(
+            f"Data sampled successfully. New dataset has {len(sampled_df)} rows."
+        )
+
+    @rx.event
+    def add_conditional_rule(self):
+        """Add a new conditional transformation rule."""
+        new_rule: ConditionalRule = {
+            "id": self.next_conditional_id,
+            "condition_column": "",
+            "condition_op": "equals",
+            "condition_value": "",
+            "action": "set_value",
+            "target_column": "",
+            "action_value": "",
+            "logic_combiner": "AND",
+        }
+        self.conditional_rules.append(new_rule)
+        self.next_conditional_id += 1
+
+    @rx.event
+    def remove_conditional_rule(self, rule_id: int):
+        """Remove a conditional rule by its ID."""
+        self.conditional_rules = [
+            rule for rule in self.conditional_rules if rule["id"] != rule_id
+        ]
+
+    @rx.event
+    def update_conditional_rule(self, rule_id: int, field: str, value: str):
+        """Update a field in a conditional rule."""
+        for i, rule in enumerate(self.conditional_rules):
+            if rule["id"] == rule_id:
+                updated_rule = self.conditional_rules[i].copy()
+                updated_rule[field] = value
+                self.conditional_rules[i] = updated_rule
+                break
+
+    @rx.event
+    def apply_conditional_transforms(self):
+        """Apply all conditional transformation rules."""
+        if not self.conditional_rules:
+            return rx.toast.warning("No conditional rules to apply.")
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            for rule in self.conditional_rules:
+                try:
+                    mask = self._build_mask(df, rule)
+                    action = rule["action"]
+                    target_col = rule["target_column"]
+                    action_val = rule["action_value"]
+                    if action == "set_value":
+                        df.loc[mask, target_col] = action_val
+                    elif action == "copy_from_column":
+                        df.loc[mask, target_col] = df.loc[mask, action_val]
+                except Exception as e:
+                    logging.exception(f"Error applying conditional rule: {e}")
+                    return rx.toast.error(
+                        f"Error with rule for column '{rule['condition_column']}'. Check parameters."
+                    )
+            self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+        return rx.toast.success("Conditional transformations applied.")
+
+    def _build_mask(self, df: pd.DataFrame, rule: ConditionalRule) -> pd.Series:
+        col = rule["condition_column"]
+        op = rule["condition_op"]
+        val = rule["condition_value"]
+        if op == "equals":
+            return df[col].astype(str) == val
+        if op == "not_equals":
+            return df[col].astype(str) != val
+        if op == "contains":
+            return df[col].astype(str).str.contains(val, case=False, na=False)
+        numeric_col = pd.to_numeric(df[col], errors="coerce")
+        numeric_val = pd.to_numeric(val, errors="coerce")
+        mask = pd.Series([False] * len(df), index=df.index)
+        valid_comp = numeric_col.notna() & (numeric_val is not None)
+        if op == "greater_than":
+            mask[valid_comp] = numeric_col[valid_comp] > numeric_val
+        elif op == "less_than":
+            mask[valid_comp] = numeric_col[valid_comp] < numeric_val
+        return mask
+
+    @rx.event
+    def toggle_melt_id_var(self, col: str):
+        if col in self.melt_id_vars:
+            self.melt_id_vars.remove(col)
+        else:
+            self.melt_id_vars.append(col)
+
+    @rx.event
+    def toggle_melt_value_var(self, col: str):
+        if col in self.melt_value_vars:
+            self.melt_value_vars.remove(col)
+        else:
+            self.melt_value_vars.append(col)
+
+    @rx.event
+    def toggle_groupby_column(self, col: str):
+        if col in self.groupby_columns:
+            self.groupby_columns.remove(col)
+        else:
+            self.groupby_columns.append(col)
+
+    @rx.event
+    def toggle_groupby_agg_column(self, col: str):
+        if col in self.groupby_agg_columns:
+            self.groupby_agg_columns.remove(col)
+        else:
+            self.groupby_agg_columns.append(col)
+
+    @rx.event
+    def apply_pivot(self):
+        """Apply pivot table operation."""
+        if not all([self.pivot_index, self.pivot_columns, self.pivot_values]):
+            return rx.toast.warning(
+                "Index, Columns, and Values must be selected for pivot."
+            )
+        all_dfs = [
+            pd.read_json(io.StringIO(f["df_json"]), orient="split")
+            for f in self.uploaded_files
+        ]
+        combined_df = pd.concat(all_dfs, ignore_index=True)
+        try:
+            pivot_df = combined_df.pivot_table(
+                index=self.pivot_index,
+                columns=self.pivot_columns,
+                values=self.pivot_values,
+                aggfunc=self.pivot_aggfunc,
+            ).reset_index()
+            self.uploaded_files = [
+                {
+                    "file_name": "pivoted_data.csv",
+                    "row_count": len(pivot_df),
+                    "columns": pivot_df.columns.tolist(),
+                    "df_json": pivot_df.to_json(orient="split"),
+                }
+            ]
+            self.column_order = self.all_columns
+            self.selected_columns = self.all_columns
+            return rx.toast.success("Pivot table created successfully.")
+        except Exception as e:
+            logging.exception(f"Error creating pivot table: {e}")
+            return rx.toast.error("Failed to create pivot table. Check selections.")
+
+    @rx.event
+    def apply_melt(self):
+        """Apply melt/unpivot operation."""
+        if not self.melt_id_vars or not self.melt_value_vars:
+            return rx.toast.warning(
+                "ID variables and Value variables must be selected."
+            )
+        all_dfs = [
+            pd.read_json(io.StringIO(f["df_json"]), orient="split")
+            for f in self.uploaded_files
+        ]
+        combined_df = pd.concat(all_dfs, ignore_index=True)
+        try:
+            melted_df = combined_df.melt(
+                id_vars=self.melt_id_vars,
+                value_vars=self.melt_value_vars,
+                var_name=self.melt_var_name,
+                value_name=self.melt_value_name,
+            )
+            self.uploaded_files = [
+                {
+                    "file_name": "melted_data.csv",
+                    "row_count": len(melted_df),
+                    "columns": melted_df.columns.tolist(),
+                    "df_json": melted_df.to_json(orient="split"),
+                }
+            ]
+            self.column_order = self.all_columns
+            self.selected_columns = self.all_columns
+            return rx.toast.success("Data melted successfully.")
+        except Exception as e:
+            logging.exception(f"Error melting data: {e}")
+            return rx.toast.error("Failed to melt data. Check selections.")
+
+    @rx.event
+    def apply_groupby(self):
+        """Apply groupby and aggregation operation."""
+        if not self.groupby_columns or not self.groupby_agg_columns:
+            return rx.toast.warning(
+                "Group-by columns and aggregation columns must be selected."
+            )
+        all_dfs = [
+            pd.read_json(io.StringIO(f["df_json"]), orient="split")
+            for f in self.uploaded_files
+        ]
+        combined_df = pd.concat(all_dfs, ignore_index=True)
+        try:
+            agg_dict = {col: self.groupby_aggfunc for col in self.groupby_agg_columns}
+            grouped_df = (
+                combined_df.groupby(self.groupby_columns).agg(agg_dict).reset_index()
+            )
+            self.uploaded_files = [
+                {
+                    "file_name": "grouped_data.csv",
+                    "row_count": len(grouped_df),
+                    "columns": grouped_df.columns.tolist(),
+                    "df_json": grouped_df.to_json(orient="split"),
+                }
+            ]
+            self.column_order = self.all_columns
+            self.selected_columns = self.all_columns
+            return rx.toast.success("Data grouped and aggregated successfully.")
+        except Exception as e:
+            logging.exception(f"Error grouping data: {e}")
+            return rx.toast.error(
+                "Failed to group data. Ensure agg function is valid for column types."
+            )
+
+    @rx.event
+    def toggle_datetime_column(self, col: str):
+        if col in self.datetime_columns:
+            self.datetime_columns.remove(col)
+        else:
+            self.datetime_columns.append(col)
+
+    @rx.event
+    def toggle_extract_component(self, component: str):
+        if component in self.extract_components:
+            self.extract_components.remove(component)
+        else:
+            self.extract_components.append(component)
+
+    @rx.event
+    def extract_date_components(self):
+        """Extract components from date columns."""
+        if not self.datetime_columns:
+            return rx.toast.warning("Please select at least one date column.")
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            for col in self.datetime_columns:
+                if col not in df.columns:
+                    continue
+                try:
+                    date_series = pd.to_datetime(df[col], errors="coerce")
+                    for comp in self.extract_components:
+                        new_col_name = f"{col}_{comp}"
+                        if new_col_name in df.columns:
+                            continue
+                        if comp == "year":
+                            df[new_col_name] = date_series.dt.year
+                        elif comp == "month":
+                            df[new_col_name] = date_series.dt.month
+                        elif comp == "day":
+                            df[new_col_name] = date_series.dt.day
+                        elif comp == "weekday":
+                            df[new_col_name] = date_series.dt.weekday
+                        elif comp == "hour":
+                            df[new_col_name] = date_series.dt.hour
+                        elif comp == "minute":
+                            df[new_col_name] = date_series.dt.minute
+                except Exception as e:
+                    logging.exception(
+                        f"Error extracting date component from {col}: {e}"
+                    )
+                    return rx.toast.error(f"Failed to process date column '{col}'.")
+            self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+            self.uploaded_files[i]["columns"] = df.columns.tolist()
+        self.column_order = self.all_columns
+        self.selected_columns = self.all_columns
+        return rx.toast.success("Date components extracted.")
+
+    @rx.event
+    def calculate_date_difference(self):
+        """Calculate difference between two date columns."""
+        if not self.date_diff_col1 or not self.date_diff_col2:
+            return rx.toast.warning(
+                "Please select two columns to calculate the difference."
+            )
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            if (
+                self.date_diff_col1 not in df.columns
+                or self.date_diff_col2 not in df.columns
+            ):
+                continue
+            try:
+                col1 = pd.to_datetime(df[self.date_diff_col1], errors="coerce")
+                col2 = pd.to_datetime(df[self.date_diff_col2], errors="coerce")
+                df[self.date_diff_new_col] = (col1 - col2).dt.days
+                self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+                self.uploaded_files[i]["columns"] = df.columns.tolist()
+            except Exception as e:
+                logging.exception(f"Error calculating date difference: {e}")
+                return rx.toast.error("Failed to calculate date difference.")
+        self.column_order = self.all_columns
+        self.selected_columns = self.all_columns
+        return rx.toast.success("Date difference calculated.")
+
+    @rx.event
+    def apply_date_arithmetic(self):
+        """Add or subtract a time delta from a date column."""
+        if not self.date_arith_column:
+            return rx.toast.warning("Please select a date column for arithmetic.")
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            if self.date_arith_column not in df.columns:
+                continue
+            try:
+                date_series = pd.to_datetime(
+                    df[self.date_arith_column], errors="coerce"
+                )
+                delta = pd.to_timedelta(
+                    self.date_arith_value, unit=self.date_arith_unit.rstrip("s")
+                )
+                if self.date_arith_op == "add":
+                    df[self.date_arith_column] = date_series + delta
+                else:
+                    df[self.date_arith_column] = date_series - delta
+                self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+            except Exception as e:
+                logging.exception(f"Error applying date arithmetic: {e}")
+                return rx.toast.error("Failed to apply date arithmetic.")
+        return rx.toast.success("Date arithmetic applied.")
+
+    @rx.event
+    def toggle_label_encode_column(self, col: str):
+        if col in self.label_encode_columns:
+            self.label_encode_columns.remove(col)
+        else:
+            self.label_encode_columns.append(col)
+
+    @rx.event
+    def apply_label_encoding(self):
+        """Apply label encoding to selected columns."""
+        if not self.label_encode_columns:
+            return rx.toast.warning("Please select columns for label encoding.")
+        mappings = {}
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            for col in self.label_encode_columns:
+                if col not in df.columns:
+                    continue
+                new_col_name = f"{col}_encoded"
+                codes, uniques = pd.factorize(df[col])
+                df[new_col_name] = codes
+                mappings[col] = {str(k): v for v, k in enumerate(uniques)}
+            self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+            self.uploaded_files[i]["columns"] = df.columns.tolist()
+        self.label_mappings = mappings
+        self.column_order = self.all_columns
+        self.selected_columns = self.all_columns
+        return rx.toast.success("Label encoding applied.")
+
+    @rx.event
+    def toggle_onehot_column(self, col: str):
+        if col in self.onehot_columns:
+            self.onehot_columns.remove(col)
+        else:
+            self.onehot_columns.append(col)
+
+    @rx.event
+    def apply_onehot_encoding(self):
+        """Apply one-hot encoding to selected columns."""
+        if not self.onehot_columns:
+            return rx.toast.warning("Please select columns for one-hot encoding.")
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            try:
+                dummies = pd.get_dummies(
+                    df[self.onehot_columns], prefix=self.onehot_columns, prefix_sep="_"
+                )
+                df = pd.concat([df.drop(columns=self.onehot_columns), dummies], axis=1)
+                self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+                self.uploaded_files[i]["columns"] = df.columns.tolist()
+            except Exception as e:
+                logging.exception(f"Error during one-hot encoding: {e}")
+                return rx.toast.error("One-hot encoding failed. Check columns.")
+        self.column_order = self.all_columns
+        self.selected_columns = self.all_columns
+        self.onehot_columns = []
+        return rx.toast.success("One-hot encoding applied.")
+
+    @rx.event
+    def toggle_remove_special_column(self, col: str):
+        if col in self.remove_special_columns:
+            self.remove_special_columns.remove(col)
+        else:
+            self.remove_special_columns.append(col)
+
+    @rx.event
+    def apply_remove_special_chars(self):
+        """Remove special characters from selected columns."""
+        if not self.remove_special_columns:
+            return rx.toast.warning("Please select columns to clean.")
+        try:
+            re.compile(self.special_char_pattern)
+        except re.error as e:
+            logging.exception(f"Invalid regex pattern: {e}")
+            return rx.toast.error("Invalid Regex pattern for special characters.")
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            for col in self.remove_special_columns:
+                if col in df.columns:
+                    df[col] = (
+                        df[col]
+                        .astype(str)
+                        .str.replace(self.special_char_pattern, "", regex=True)
+                    )
+            self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+        return rx.toast.success("Special characters removed.")
