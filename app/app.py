@@ -4,10 +4,13 @@ from app.state import State
 from app.components.header import header
 from app.components.tabs import navigation_tabs
 from app.components.upload import upload_view
+from app.components.profiling import profiling_view
 from app.components.mapping import mapping_view
+from app.components.column_selection import column_selection_view
 from app.components.filter import filter_view
 from app.components.validation import validation_view
 from app.components.datatypes import data_types_view
+from app.components.deduplication import deduplication_view
 from app.components.download import download_view
 
 
@@ -21,10 +24,13 @@ def index() -> rx.Component:
                 rx.match(
                     State.active_tab,
                     ("upload", upload_view()),
+                    ("profiling", profiling_view()),
                     ("mapping", mapping_view()),
+                    ("column_selection", column_selection_view()),
                     ("filter", filter_view()),
                     ("validation", validation_view()),
                     ("datatypes", data_types_view()),
+                    ("deduplication", deduplication_view()),
                     ("download", download_view()),
                     rx.el.div("Select a tab", class_name="text-center text-gray-500"),
                 ),

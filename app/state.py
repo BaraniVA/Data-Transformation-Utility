@@ -48,6 +48,12 @@ class State(rx.State):
     preview_page: int = 1
     preview_rows_per_page: int = 10
     download_format: str = "csv"
+    dedup_columns: list[str] = []
+    dedup_keep: str = "first"
+    duplicates_found: int = -1
+    selected_columns: list[str] = []
+    column_order: list[str] = []
+    profiling_data: dict[str, dict] = {}
 
     @rx.var
     def total_preview_rows(self) -> int:
@@ -239,6 +245,9 @@ class State(rx.State):
                 logging.exception(f"Error processing {file.name}: {e}")
                 yield rx.toast.error(f"Error processing {file.name}: {e}")
         self.is_uploading = False
+        if self.uploaded_files:
+            self.column_order = self.all_columns
+            self.selected_columns = self.all_columns
         yield rx.toast.success(f"Successfully uploaded {len(files)} file(s).")
 
     @rx.event
@@ -295,6 +304,11 @@ class State(rx.State):
         self.validation_rules = []
         self.validation_results = {}
         self.show_validation_results = False
+        self.profiling_data = {}
+        self.selected_columns = []
+        self.column_order = []
+        self.dedup_columns = []
+        self.duplicates_found = -1
         yield rx.toast.info("All files have been cleared.")
 
     @rx.event
@@ -306,6 +320,8 @@ class State(rx.State):
         self.active_tab = tab_name
         if self.active_tab == "download":
             self._prepare_preview_data()
+        if self.active_tab == "profiling":
+            self.generate_data_profile()
 
     def _prepare_preview_data(self):
         """Helper to combine all dataframes for preview."""
@@ -553,3 +569,144 @@ class State(rx.State):
         rows_removed_count = len(combined_df) - len(valid_rows_df)
         self.clear_validation_results()
         return rx.toast.success(f"Removed {rows_removed_count} invalid rows.")
+
+    @rx.event
+    def toggle_dedup_column(self, column: str):
+        """Add or remove a column from the deduplication key."""
+        if column in self.dedup_columns:
+            self.dedup_columns.remove(column)
+        else:
+            self.dedup_columns.append(column)
+        self.duplicates_found = -1
+
+    @rx.event
+    def set_dedup_keep(self, strategy: str):
+        """Set the keep strategy for deduplication."""
+        self.dedup_keep = strategy
+        self.duplicates_found = -1
+
+    @rx.event
+    def find_duplicates(self):
+        """Scan data to find the count of duplicate rows."""
+        if not self.dedup_columns:
+            return rx.toast.warning(
+                "Please select at least one column for deduplication."
+            )
+        total_rows = 0
+        total_unique_rows = 0
+        for file_data in self.uploaded_files:
+            df = pd.read_json(io.StringIO(file_data["df_json"]), orient="split")
+            total_rows += len(df)
+            dedup_df = df.drop_duplicates(subset=self.dedup_columns, keep="first")
+            total_unique_rows += len(dedup_df)
+        self.duplicates_found = total_rows - total_unique_rows
+        return rx.toast.info(f"Found {self.duplicates_found} duplicate rows.")
+
+    @rx.event
+    def remove_duplicates(self):
+        """Remove duplicate rows from all dataframes."""
+        if self.duplicates_found < 0:
+            return rx.toast.warning("Please run 'Find Duplicates' first.")
+        total_rows_before = sum((f["row_count"] for f in self.uploaded_files))
+        total_rows_after = 0
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            keep = self.dedup_keep if self.dedup_keep != "none" else False
+            df.drop_duplicates(subset=self.dedup_columns, keep=keep, inplace=True)
+            self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+            self.uploaded_files[i]["row_count"] = len(df)
+            total_rows_after += len(df)
+        rows_removed_count = total_rows_before - total_rows_after
+        self.duplicates_found = -1
+        self.dedup_columns = []
+        return rx.toast.success(f"Removed {rows_removed_count} duplicate rows.")
+
+    @rx.event
+    def toggle_column_selection(self, column: str):
+        """Toggle the selection of a column for the final output."""
+        if column in self.selected_columns:
+            self.selected_columns.remove(column)
+        else:
+            self.selected_columns.append(column)
+
+    @rx.event
+    def select_all_columns(self):
+        """Select all available columns."""
+        self.selected_columns = self.all_columns.copy()
+
+    @rx.event
+    def deselect_all_columns(self):
+        """Deselect all columns."""
+        self.selected_columns = []
+
+    @rx.event
+    def move_column_up(self, column: str):
+        """Move a column up in the order."""
+        idx = self.column_order.index(column)
+        if idx > 0:
+            self.column_order.insert(idx - 1, self.column_order.pop(idx))
+
+    @rx.event
+    def move_column_down(self, column: str):
+        """Move a column down in the order."""
+        idx = self.column_order.index(column)
+        if idx < len(self.column_order) - 1:
+            self.column_order.insert(idx + 1, self.column_order.pop(idx))
+
+    @rx.event
+    def apply_column_selection(self):
+        """Apply the selected columns and their order to all dataframes."""
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            final_cols = [
+                col
+                for col in self.column_order
+                if col in self.selected_columns and col in df.columns
+            ]
+            df = df[final_cols]
+            self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+            self.uploaded_files[i]["columns"] = df.columns.tolist()
+        return rx.toast.success("Column selection and order applied.")
+
+    @rx.event
+    def generate_data_profile(self):
+        """Generate profiling statistics for the combined data."""
+        if not self.uploaded_files:
+            self.profiling_data = {}
+            return rx.toast.warning("No data to profile.")
+        all_dfs = [
+            pd.read_json(io.StringIO(f["df_json"]), orient="split")
+            for f in self.uploaded_files
+        ]
+        combined_df = pd.concat(all_dfs, ignore_index=True)
+        profile = {}
+        for col in combined_df.columns:
+            s = combined_df[col]
+            stats = {
+                "dtype": str(s.dtype),
+                "count": int(s.count()),
+                "unique": int(s.nunique()),
+                "null_count": int(s.isnull().sum()),
+            }
+            stats["null_percentage"] = stats["null_count"] / len(s) if len(s) > 0 else 0
+            if pd.api.types.is_numeric_dtype(s):
+                desc = s.describe()
+                stats["min"] = float(desc.get("min", 0))
+                stats["max"] = float(desc.get("max", 0))
+                stats["mean"] = float(desc.get("mean", 0))
+                stats["median"] = float(s.median())
+            elif pd.api.types.is_string_dtype(s) or s.dtype == "object":
+                str_series = s.astype(str)
+                stats["min_len"] = (
+                    int(str_series.str.len().min()) if stats["count"] > 0 else 0
+                )
+                stats["max_len"] = (
+                    int(str_series.str.len().max()) if stats["count"] > 0 else 0
+                )
+            profile[col] = stats
+        self.profiling_data = profile
+        return rx.toast.success("Data profile generated.")

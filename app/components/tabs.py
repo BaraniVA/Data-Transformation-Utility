@@ -21,12 +21,15 @@ def navigation_tabs() -> rx.Component:
     return rx.el.div(
         rx.el.div(
             nav_button("Upload", "upload"),
+            nav_button("Profiling", "profiling"),
             nav_button("Column Mapping", "mapping"),
+            nav_button("Column Selection", "column_selection"),
             nav_button("Filter & Cleanup", "filter"),
             nav_button("Validation", "validation"),
             nav_button("Data Types", "datatypes"),
+            nav_button("Deduplication", "deduplication"),
             nav_button("Preview & Download", "download"),
-            class_name="flex items-center gap-2 p-1 bg-gray-50 border border-gray-200 rounded-xl",
+            class_name="flex items-center gap-2 p-1 bg-gray-50 border border-gray-200 rounded-xl overflow-x-auto",
         ),
         class_name="flex justify-center my-6",
     )
