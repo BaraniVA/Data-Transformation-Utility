@@ -3,6 +3,7 @@ import pandas as pd
 from typing import TypedDict, Any
 import io
 import logging
+import re
 
 
 class FilterRule(TypedDict):
@@ -54,6 +55,31 @@ class State(rx.State):
     selected_columns: list[str] = []
     column_order: list[str] = []
     profiling_data: dict[str, dict] = {}
+    find_text: str = ""
+    replace_text: str = ""
+    find_replace_column: str = "_all_"
+    case_sensitive: bool = False
+    use_regex: bool = False
+    match_count: int = -1
+    case_conversion_columns: list[str] = []
+    case_conversion_type: str = "upper"
+    whitespace_columns: list[str] = []
+    whitespace_operation: str = "all"
+    null_stats: dict[str, dict] = {}
+    fill_columns: list[str] = []
+    fill_strategy: str = "custom"
+    fill_custom_value: str = ""
+    split_column: str = ""
+    split_delimiter: str = ","
+    split_new_col_prefix: str = "split_"
+    split_num_splits: int = -1
+    join_columns: list[str] = []
+    join_separator: str = " "
+    join_new_col_name: str = "joined_column"
+    extract_column: str = ""
+    extract_start_pos: int = 0
+    extract_end_pos: int | None = None
+    extract_new_col_name: str = "extracted_column"
 
     @rx.var
     def total_preview_rows(self) -> int:
@@ -309,6 +335,29 @@ class State(rx.State):
         self.column_order = []
         self.dedup_columns = []
         self.duplicates_found = -1
+        self.find_text = ""
+        self.replace_text = ""
+        self.find_replace_column = "_all_"
+        self.case_sensitive = False
+        self.use_regex = False
+        self.match_count = -1
+        self.case_conversion_columns = []
+        self.whitespace_columns = []
+        self.null_stats = {}
+        self.fill_columns = []
+        self.fill_strategy = "custom"
+        self.fill_custom_value = ""
+        self.split_column = ""
+        self.split_delimiter = ","
+        self.split_new_col_prefix = "split_"
+        self.split_num_splits = -1
+        self.join_columns = []
+        self.join_separator = " "
+        self.join_new_col_name = "joined_column"
+        self.extract_column = ""
+        self.extract_start_pos = 0
+        self.extract_end_pos = None
+        self.extract_new_col_name = "extracted_column"
         yield rx.toast.info("All files have been cleared.")
 
     @rx.event
@@ -322,6 +371,8 @@ class State(rx.State):
             self._prepare_preview_data()
         if self.active_tab == "profiling":
             self.generate_data_profile()
+        if self.active_tab == "null_handling":
+            self.calculate_null_stats()
 
     def _prepare_preview_data(self):
         """Helper to combine all dataframes for preview."""
@@ -699,7 +750,7 @@ class State(rx.State):
                 stats["max"] = float(desc.get("max", 0))
                 stats["mean"] = float(desc.get("mean", 0))
                 stats["median"] = float(s.median())
-            elif pd.api.types.is_string_dtype(s) or s.dtype == "object":
+            if pd.api.types.is_string_dtype(s) or s.dtype == "object":
                 str_series = s.astype(str)
                 stats["min_len"] = (
                     int(str_series.str.len().min()) if stats["count"] > 0 else 0
@@ -710,3 +761,306 @@ class State(rx.State):
             profile[col] = stats
         self.profiling_data = profile
         return rx.toast.success("Data profile generated.")
+
+    @rx.event
+    def calculate_null_stats(self):
+        """Calculate null counts and percentages for all columns."""
+        if not self.uploaded_files:
+            self.null_stats = {}
+            return rx.toast.warning("No data to analyze.")
+        all_dfs = [
+            pd.read_json(io.StringIO(f["df_json"]), orient="split")
+            for f in self.uploaded_files
+        ]
+        combined_df = pd.concat(all_dfs, ignore_index=True)
+        stats = {}
+        for col in combined_df.columns:
+            null_count = int(combined_df[col].isnull().sum())
+            total_count = len(combined_df[col])
+            null_percentage = null_count / total_count if total_count > 0 else 0
+            stats[col] = {"null_count": null_count, "null_percentage": null_percentage}
+        self.null_stats = stats
+        return rx.toast.success("Null value statistics updated.")
+
+    @rx.event
+    def toggle_fill_column(self, column: str):
+        """Toggle a column for the fill operation."""
+        if column in self.fill_columns:
+            self.fill_columns.remove(column)
+        else:
+            self.fill_columns.append(column)
+
+    @rx.event
+    def apply_fill_nulls(self):
+        """Apply the selected fill strategy to the selected columns."""
+        if not self.fill_columns:
+            return rx.toast.warning("Please select at least one column to fill.")
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            for col in self.fill_columns:
+                if col not in df.columns:
+                    continue
+                try:
+                    if self.fill_strategy == "custom":
+                        df[col].fillna(self.fill_custom_value, inplace=True)
+                    elif self.fill_strategy == "ffill":
+                        df[col].fillna(method="ffill", inplace=True)
+                    elif self.fill_strategy == "bfill":
+                        df[col].fillna(method="bfill", inplace=True)
+                    elif self.fill_strategy == "mean":
+                        if pd.api.types.is_numeric_dtype(df[col]):
+                            df[col].fillna(df[col].mean(), inplace=True)
+                        else:
+                            return rx.toast.error(
+                                f"'Mean' can only be applied to numeric columns. '{col}' is not numeric."
+                            )
+                    elif self.fill_strategy == "median":
+                        if pd.api.types.is_numeric_dtype(df[col]):
+                            df[col].fillna(df[col].median(), inplace=True)
+                        else:
+                            return rx.toast.error(
+                                f"'Median' can only be applied to numeric columns. '{col}' is not numeric."
+                            )
+                    elif self.fill_strategy == "mode":
+                        mode_val = df[col].mode()
+                        if not mode_val.empty:
+                            df[col].fillna(mode_val[0], inplace=True)
+                except Exception as e:
+                    logging.exception(f"Error filling nulls in column {col}: {e}")
+                    return rx.toast.error(f"Failed to fill nulls in '{col}'.")
+            self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+        self.fill_columns = []
+        self.calculate_null_stats()
+        return rx.toast.success("Null values filled successfully.")
+
+    @rx.event
+    def remove_null_rows_any(self):
+        """Remove rows that contain any null values."""
+        total_rows_before = sum((f["row_count"] for f in self.uploaded_files))
+        total_rows_after = 0
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            df.dropna(inplace=True)
+            self.uploaded_files[i]["row_count"] = len(df)
+            self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+            total_rows_after += len(df)
+        rows_removed_count = total_rows_before - total_rows_after
+        self.calculate_null_stats()
+        return rx.toast.success(f"Removed {rows_removed_count} rows with null values.")
+
+    @rx.event
+    def find_matches(self):
+        if not self.find_text:
+            return rx.toast.warning("Search text cannot be empty.")
+        count = 0
+        for file_data in self.uploaded_files:
+            df = pd.read_json(io.StringIO(file_data["df_json"]), orient="split")
+            columns_to_search = (
+                [self.find_replace_column]
+                if self.find_replace_column != "_all_"
+                else df.columns
+            )
+            for col in columns_to_search:
+                if col in df.columns and (
+                    pd.api.types.is_string_dtype(df[col]) or df[col].dtype == "object"
+                ):
+                    matches = df[col].str.count(
+                        self.find_text,
+                        flags=0 if self.case_sensitive else re.IGNORECASE,
+                    )
+                    count += matches.sum()
+        self.match_count = count
+        return rx.toast.info(f"Found {count} matches.")
+
+    @rx.event
+    def apply_find_replace(self):
+        if not self.find_text:
+            return rx.toast.warning("Search text cannot be empty.")
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            columns_to_search = (
+                [self.find_replace_column]
+                if self.find_replace_column != "_all_"
+                else df.columns
+            )
+            for col in columns_to_search:
+                if col in df.columns and (
+                    pd.api.types.is_string_dtype(df[col]) or df[col].dtype == "object"
+                ):
+                    df[col] = df[col].str.replace(
+                        self.find_text,
+                        self.replace_text,
+                        case=self.case_sensitive,
+                        regex=self.use_regex,
+                    )
+            self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+        self.match_count = -1
+        return rx.toast.success("Find and replace operation completed.")
+
+    @rx.event
+    def toggle_case_conversion_column(self, column: str):
+        if column in self.case_conversion_columns:
+            self.case_conversion_columns.remove(column)
+        else:
+            self.case_conversion_columns.append(column)
+
+    @rx.event
+    def apply_case_conversion(self):
+        if not self.case_conversion_columns:
+            return rx.toast.warning("Please select at least one column.")
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            for col in self.case_conversion_columns:
+                if col in df.columns and (
+                    pd.api.types.is_string_dtype(df[col]) or df[col].dtype == "object"
+                ):
+                    if self.case_conversion_type == "upper":
+                        df[col] = df[col].str.upper()
+                    elif self.case_conversion_type == "lower":
+                        df[col] = df[col].str.lower()
+                    elif self.case_conversion_type == "title":
+                        df[col] = df[col].str.title()
+                    elif self.case_conversion_type == "capitalize":
+                        df[col] = df[col].str.capitalize()
+            self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+        return rx.toast.success(f"Applied {self.case_conversion_type} case.")
+
+    @rx.event
+    def toggle_whitespace_column(self, column: str):
+        if column in self.whitespace_columns:
+            self.whitespace_columns.remove(column)
+        else:
+            self.whitespace_columns.append(column)
+
+    @rx.event
+    def apply_whitespace_operation(self):
+        if not self.whitespace_columns:
+            return rx.toast.warning("Please select at least one column.")
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            for col in self.whitespace_columns:
+                if col in df.columns and (
+                    pd.api.types.is_string_dtype(df[col]) or df[col].dtype == "object"
+                ):
+                    if self.whitespace_operation == "leading":
+                        df[col] = df[col].str.lstrip()
+                    elif self.whitespace_operation == "trailing":
+                        df[col] = df[col].str.rstrip()
+                    elif self.whitespace_operation == "all":
+                        df[col] = df[col].str.strip()
+                    elif self.whitespace_operation == "collapse":
+                        df[col] = (
+                            df[col].str.replace("\\s+", " ", regex=True).str.strip()
+                        )
+            self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+        return rx.toast.success("Whitespace operation applied successfully.")
+
+    @rx.event
+    def toggle_join_column(self, column: str):
+        """Toggle a column for the join operation."""
+        if column in self.join_columns:
+            self.join_columns.remove(column)
+        else:
+            self.join_columns.append(column)
+
+    @rx.event
+    def apply_split_column(self):
+        """Split a column into multiple columns."""
+        if not self.split_column:
+            return rx.toast.warning("Please select a column to split.")
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            if self.split_column not in df.columns:
+                continue
+            try:
+                split_data = df[self.split_column].str.split(
+                    self.split_delimiter, n=self.split_num_splits, expand=True
+                )
+                num_new_cols = len(split_data.columns)
+                new_col_names = [
+                    f"{self.split_new_col_prefix}{j + 1}" for j in range(num_new_cols)
+                ]
+                split_data.columns = new_col_names
+                for name in new_col_names:
+                    if name in df.columns:
+                        return rx.toast.error(
+                            f"New column name '{name}' already exists. Choose a different prefix."
+                        )
+                df = pd.concat([df, split_data], axis=1)
+                self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+                self.uploaded_files[i]["columns"] = df.columns.tolist()
+            except Exception as e:
+                logging.exception(f"Error splitting column: {e}")
+                return rx.toast.error("Failed to split column.")
+        self.column_order = self.all_columns
+        self.selected_columns = self.all_columns
+        return rx.toast.success(f"Column '{self.split_column}' split successfully.")
+
+    @rx.event
+    def apply_join_columns(self):
+        """Join multiple columns into a single column."""
+        if len(self.join_columns) < 2:
+            return rx.toast.warning("Please select at least two columns to join.")
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            if self.join_new_col_name in df.columns:
+                return rx.toast.error(
+                    f"New column name '{self.join_new_col_name}' already exists."
+                )
+            try:
+                df[self.join_new_col_name] = (
+                    df[self.join_columns]
+                    .astype(str)
+                    .agg(self.join_separator.join, axis=1)
+                )
+                self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+                self.uploaded_files[i]["columns"] = df.columns.tolist()
+            except Exception as e:
+                logging.exception(f"Error joining columns: {e}")
+                return rx.toast.error("Failed to join columns.")
+        self.join_columns = []
+        self.column_order = self.all_columns
+        self.selected_columns = self.all_columns
+        return rx.toast.success("Columns joined successfully.")
+
+    @rx.event
+    def apply_extract_substring(self):
+        """Extract a substring from a column."""
+        if not self.extract_column:
+            return rx.toast.warning("Please select a column for extraction.")
+        if self.extract_new_col_name in self.all_columns:
+            return rx.toast.error(
+                f"New column name '{self.extract_new_col_name}' already exists."
+            )
+        for i in range(len(self.uploaded_files)):
+            df = pd.read_json(
+                io.StringIO(self.uploaded_files[i]["df_json"]), orient="split"
+            )
+            if self.extract_column not in df.columns:
+                continue
+            try:
+                df[self.extract_new_col_name] = df[self.extract_column].str[
+                    self.extract_start_pos : self.extract_end_pos
+                ]
+                self.uploaded_files[i]["df_json"] = df.to_json(orient="split")
+                self.uploaded_files[i]["columns"] = df.columns.tolist()
+            except Exception as e:
+                logging.exception(f"Error extracting substring: {e}")
+                return rx.toast.error("Failed to extract substring.")
+        self.column_order = self.all_columns
+        self.selected_columns = self.all_columns
+        return rx.toast.success("Substring extracted successfully.")

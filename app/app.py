@@ -6,8 +6,11 @@ from app.components.tabs import navigation_tabs
 from app.components.upload import upload_view
 from app.components.profiling import profiling_view
 from app.components.mapping import mapping_view
+from app.components.text_ops import text_ops_view
+from app.components.split_join import split_join_view
 from app.components.column_selection import column_selection_view
 from app.components.filter import filter_view
+from app.components.null_handling import null_handling_view
 from app.components.validation import validation_view
 from app.components.datatypes import data_types_view
 from app.components.deduplication import deduplication_view
@@ -26,8 +29,11 @@ def index() -> rx.Component:
                     ("upload", upload_view()),
                     ("profiling", profiling_view()),
                     ("mapping", mapping_view()),
+                    ("text_ops", text_ops_view()),
+                    ("split_join", split_join_view()),
                     ("column_selection", column_selection_view()),
                     ("filter", filter_view()),
+                    ("null_handling", null_handling_view()),
                     ("validation", validation_view()),
                     ("datatypes", data_types_view()),
                     ("deduplication", deduplication_view()),
