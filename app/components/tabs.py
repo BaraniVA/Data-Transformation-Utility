@@ -79,8 +79,7 @@ def navigation_tabs() -> rx.Component:
             tab_group(
                 "Finish", nav_button("Download", "download", "cloud_download", "green")
             ),
-            class_name="flex flex-wrap items-start justify-center gap-4 p-4 bg-gray-800/80 backdrop-blur-sm border border-white/10 rounded-2xl shadow-2xl shadow-black/20",
-            style={"background_image": "linear-gradient(145deg, #2D3748, #1A202C)"},
+            class_name="flex flex-wrap items-start justify-center gap-4 p-4 bg-gray-100 border border-gray-200 rounded-2xl shadow-md",
         ),
         class_name="my-8 px-4",
     )
