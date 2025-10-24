@@ -1166,7 +1166,7 @@ class State(rx.State):
 
     @rx.event
     def apply_sampling(self):
-        """Apply the selected sampling method to the data."""
+        """Apply the selected sampling method to the data and add it as a new file."""
         all_dfs = [
             pd.read_json(io.StringIO(f["df_json"]), orient="split")
             for f in self.uploaded_files
@@ -1174,28 +1174,32 @@ class State(rx.State):
         if not all_dfs:
             return rx.toast.warning("No data to sample.")
         combined_df = pd.concat(all_dfs, ignore_index=True)
+        filename_part = ""
         if self.sample_type == "random":
             sampled_df = combined_df.sample(n=self.sample_n)
+            filename_part = f"random_{self.sample_n}_rows"
         elif self.sample_type == "percentage":
             sampled_df = combined_df.sample(frac=self.sample_percentage / 100)
+            filename_part = f"percentage_{self.sample_percentage}_percent"
         elif self.sample_type == "top":
             sampled_df = combined_df.head(self.sample_n)
+            filename_part = f"top_{self.sample_n}_rows"
         elif self.sample_type == "bottom":
             sampled_df = combined_df.tail(self.sample_n)
+            filename_part = f"bottom_{self.sample_n}_rows"
         else:
             return rx.toast.error("Invalid sample type.")
-        self.uploaded_files = [
-            {
-                "file_name": f"sampled_data_{self.sample_type}.csv",
-                "row_count": len(sampled_df),
-                "columns": sampled_df.columns.tolist(),
-                "df_json": sampled_df.to_json(orient="split"),
-            }
-        ]
+        new_file_data: FileData = {
+            "file_name": f"sampled_data_{filename_part}.csv",
+            "row_count": len(sampled_df),
+            "columns": sampled_df.columns.tolist(),
+            "df_json": sampled_df.to_json(orient="split"),
+        }
+        self.uploaded_files.append(new_file_data)
         self.column_order = self.all_columns
         self.selected_columns = self.all_columns
         return rx.toast.success(
-            f"Data sampled successfully. New dataset has {len(sampled_df)} rows."
+            f"Sampled data added as a new file with {len(sampled_df)} rows."
         )
 
     @rx.event
