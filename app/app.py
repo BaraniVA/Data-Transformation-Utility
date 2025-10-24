@@ -14,6 +14,11 @@ from app.components.null_handling import null_handling_view
 from app.components.validation import validation_view
 from app.components.datatypes import data_types_view
 from app.components.deduplication import deduplication_view
+from app.components.conditional_transform import conditional_transform_view
+from app.components.datetime import datetime_view
+from app.components.sample_sort import sample_sort_view
+from app.components.pivot import pivot_view
+from app.components.encoding import encoding_view
 from app.components.download import download_view
 
 
@@ -37,6 +42,11 @@ def index() -> rx.Component:
                     ("validation", validation_view()),
                     ("datatypes", data_types_view()),
                     ("deduplication", deduplication_view()),
+                    ("conditional_transform", conditional_transform_view()),
+                    ("datetime", datetime_view()),
+                    ("sample_sort", sample_sort_view()),
+                    ("pivot", pivot_view()),
+                    ("encoding", encoding_view()),
                     ("download", download_view()),
                     rx.el.div("Select a tab", class_name="text-center text-gray-500"),
                 ),
