@@ -49,6 +49,7 @@ def index() -> rx.Component:
 
 
 app = rxe.App(
+    stylesheets=["/tabs.css"],
     theme=rx.theme(appearance="light"),
     head_components=[
         rx.el.link(rel="preconnect", href="https://fonts.googleapis.com"),
